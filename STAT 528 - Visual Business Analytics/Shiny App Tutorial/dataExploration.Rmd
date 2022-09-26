@@ -1,0 +1,472 @@
+---
+title: 'Iowa Liquor Sales Case Study'
+subtitle: 'Data Exploration Notebook'
+output: pdf_document
+---
+
+# Introduction
+
+This Rmd file contains code to analyze the Iowa Liquor Sales data set.
+The analyses performed here extend past the analysis shown in the lecture videos.
+In particular, the bottom of the file explores association rules between different types of liquor.
+
+
+[Data source](https://data.iowa.gov/Sales-Distribution/Iowa-Liquor-Sales/m3tr-qhgy)
+
+# Setup
+
+```{r setup}
+library(tidyverse)
+
+liquor <- read_csv("Iowa-Liquor-Sales.csv")
+```
+
+```{r}
+liquor
+```
+
+# Data Questions
+
+## Summary
+
+- What are the most popular items/vendors/categories?
+  - The total number of sales that include a particular item/vendor/category
+  - The total volume sold
+
+- What are the most profitable items/vendors/categories?
+  - Per-item profit, profit margin 
+  - Per-sale profit, profit margin
+
+## Temporal
+
+- What is the relationship between sales and time?
+
+## Spatial
+
+- What is the relationship between sales and county/city?
+
+## Market Basket Analysis/Association Rules
+
+- Are there any associations between particular items?
+
+# Data Cleaning
+
+```{r}
+liquor <- liquor %>%
+  select(-c(`Store Number`,
+            `County Number`,
+            Category,
+            `Vendor Number`,
+            `Item Number`,
+            `Volume Sold (Liters)`)) %>%
+  rename(invoice = `Invoice/Item Number`,
+         storeName = `Store Name`,
+         zip = `Zip Code`,
+         location = `Store Location`,
+         category = `Category Name`,
+         vendor = `Vendor Name`,
+         description = `Item Description`,
+         bottleVolume = `Bottle Volume (ml)`,
+         cost = `State Bottle Cost`,
+         retail = `State Bottle Retail`,
+         numSold = `Bottles Sold`,
+         saleTotal = `Sale (Dollars)`,
+         saleVolume = `Volume Sold (Gallons)`) %>%
+  mutate(Date = lubridate::dmy(Date),
+         location = location %>%
+           str_remove(pattern = "POINT \\(") %>%
+           str_remove(pattern = "\\)")) %>%
+  tidyr::separate(col = location,into = c("long","lat"),sep = " ",convert = TRUE)
+
+liquor
+```
+
+# Visualizations
+
+```{r}
+liquor %>%
+  group_by(vendor) %>%
+  # summarise(n = n()) %>%
+  summarise(saleTotal = sum(saleTotal)) %>%
+  top_n(n = 15,wt = saleTotal) %>%
+  ggplot(aes(x=reorder(vendor,saleTotal),y=saleTotal)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_bw() +
+  labs(y = "Total Sales",
+       x = "Liquor") +
+  scale_y_continuous(labels = scales::dollar)
+```
+
+```{r}
+liquor %>%
+  mutate(profit = retail - cost,
+         totalProfit = profit*numSold) %>%
+  group_by(vendor) %>%
+  summarise(totalProfit = sum(totalProfit)) %>%
+  top_n(n = 15,wt = totalProfit) %>%
+  ggplot(aes(x=reorder(vendor,totalProfit),y=totalProfit)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_bw() +
+  labs(y = "Total Profit",
+       x = "Vendor") +
+  scale_y_continuous(labels = scales::dollar)
+```
+
+```{r}
+liquor %>%
+  mutate(profit = retail - cost,
+         # totalProfit = profit*numSold,
+         profitMargin = profit/retail) %>%
+  group_by(vendor) %>%
+  summarise(profitMargin = mean(profitMargin)) %>%
+  top_n(n = 15,wt = profitMargin) %>%
+  ggplot(aes(x=reorder(vendor,profitMargin),y=profitMargin)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_bw() +
+  labs(y = "Profit Margin",
+       x = "Vendor") +
+  scale_y_continuous(labels = scales::percent)
+```
+
+```{r}
+liquor %>%
+  mutate(profit = retail - cost,
+         # totalProfit = profit*numSold,
+         profitMargin = profit/retail) %>%
+  group_by(description) %>%
+  summarise(profitMargin = mean(profitMargin)) %>%
+  top_n(n = 15,wt = profitMargin) %>%
+  ggplot(aes(x=reorder(description,profitMargin),y=profitMargin)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  theme_bw() +
+  labs(y = "Profit Margin",
+       x = "Vendor") +
+  scale_y_continuous(labels = scales::percent)
+```
+
+The plots below explore the most and least profitable liquors (per unit)
+
+```{r}
+# most profitable
+liquor %>%
+  mutate(profit = retail - cost,
+         profitMargin = profit/retail) %>%
+  select(description,profitMargin) %>%
+  distinct() %>%
+  group_by(description) %>%
+  summarise(profitMargin = mean(profitMargin)) %>%
+  top_n(n = 20,wt = profitMargin) %>%
+  ggplot(aes(x=reorder(description,profitMargin),y=profitMargin)) +
+  geom_bar(stat = "identity") +
+  coord_flip()
+
+# least profitable
+liquor %>%
+  mutate(profit = retail - cost,
+         profitMargin = profit/retail) %>%
+  select(description,profitMargin) %>%
+  distinct() %>%
+  group_by(description) %>%
+  summarise(profitMargin = mean(profitMargin)) %>%
+  top_n(n = 5,wt = -profitMargin) %>%
+  ggplot(aes(x=reorder(description,profitMargin),y=profitMargin)) +
+  geom_bar(stat = "identity") +
+  coord_flip()
+```
+
+You'll notice in the least profitable plot that the 'Rich & Rare Apple Mini' is suspiciously not profitable (over -300%). Looking deeper into this liquor, it appears that there is a recording error where some of the costs were recorded as $60 based on the output below. Removing these outliers makes a nicer plot.
+
+```{r}
+liquor %>%
+  filter(description == "Rich & Rare Apple Mini") %>%
+  select(storeName,City,Date,cost,retail) %>%
+  arrange(storeName)
+
+# least profitable, fixed
+liquor %>%
+  filter(!(description == "Rich & Rare Apple Mini" & cost == 60)) %>%
+  mutate(profit = retail - cost,
+         profitMargin = profit/retail) %>%
+  select(description,profitMargin) %>%
+  distinct() %>%
+  group_by(description) %>%
+  summarise(profitMargin = mean(profitMargin)) %>%
+  top_n(n = 7,wt = -profitMargin) %>%
+  ggplot(aes(x=reorder(description,profitMargin),y=profitMargin)) +
+  geom_bar(stat = "identity") +
+  coord_flip()
+```
+
+
+
+## Temporal data
+
+```{r}
+popularLiquors <- liquor %>%
+  group_by(description) %>%
+  summarise(totalSale = sum(saleTotal)) %>%
+  top_n(15,wt = totalSale) %>%
+  pull(description)
+
+liquor %>%
+  filter(description %in% popularLiquors) %>%
+  group_by(description,Date) %>%
+  summarise(totalSale = sum(saleTotal)) %>%
+  ggplot(aes(x=Date,y = totalSale)) +
+  geom_point() +
+  facet_wrap(~description) +
+  theme_bw()
+```
+
+```{r}
+liquor %>%
+  filter(description %in% popularLiquors & lubridate::year(Date) == 2021) %>%
+  mutate(week = lubridate::week(Date)) %>%
+  group_by(description,week) %>%
+  summarise(totalSale = sum(saleTotal)) %>%
+  ggplot(aes(x=week,y = totalSale)) +
+  geom_point() +
+  facet_wrap(~description) +
+  theme_bw()
+```
+
+```{r}
+liquor %>%
+  filter(description %in% popularLiquors) %>%
+  mutate(weekday = lubridate::wday(Date,label = TRUE)) %>%
+  group_by(description,weekday) %>%
+  summarise(totalSale = sum(saleTotal)) %>%
+  ggplot(aes(x=weekday,y = totalSale)) +
+  geom_point() +
+  facet_wrap(~description) +
+  theme_bw()
+```
+
+## Spatial
+
+```{r}
+iowaCounty <- ggplot2::map_data(map = "county",region = "iowa")
+
+iowaCounty %>%
+  mutate(subregion = toupper(subregion)) %>%
+  head()
+```
+
+```{r}
+liquor <- liquor %>%
+  mutate(County = ifelse(County == "BUENA VIST","BUENA VISTA",
+                         ifelse(County == "CERRO GORD","CERRO GORDO",
+                                ifelse(str_detect(toupper(County),pattern = "POTTAWATTA"),"POTTAWATTAMIE",toupper(County)))))
+
+liquorFiltered <- liquor %>%
+  mutate(County = toupper(County)) %>%
+  filter(description %in% popularLiquors) %>%
+  group_by(description,County) %>%
+  summarise(saleTotal = sum(saleTotal))
+
+iowaCounty %>%
+  mutate(subregion = toupper(subregion)) %>%
+  left_join(y = liquorFiltered,
+            by = c("subregion" = "County")) %>%
+  ggplot(aes(x = long,y = lat)) +
+  geom_polygon(aes(group = group,fill = saleTotal),
+               colour = "gray50") +
+  facet_wrap(~description) +
+  theme_void() +
+  scale_fill_gradient(low = "white",high = "red")
+```
+
+```{r}
+unique(iowaCounty$subregion)
+
+unique(liquor$County)
+```
+
+```{r}
+library(rvest)
+
+iowaCountyPop <- rvest::read_html("https://www.iowa-demographics.com/counties_by_population") %>%
+  rvest::html_element("table") %>%
+  rvest::html_table()
+
+iowaCountyPop <- iowaCountyPop %>%
+  select(County,Population) %>%
+  mutate(County = County %>%
+           str_remove(pattern = " County") %>%
+           toupper(),
+         Population = Population %>%
+           str_remove(pattern = ",") %>%
+           as.numeric()) %>%
+  slice(-100)
+
+iowaCounty %>%
+  mutate(subregion = toupper(subregion)) %>%
+  left_join(y = liquorFiltered,
+            by = c("subregion" = "County")) %>%
+  left_join(iowaCountyPop,
+            by = c("subregion" = "County" )) %>%
+  mutate(perCapSales = saleTotal/Population) %>%
+  ggplot(aes(x = long,y = lat)) +
+  geom_polygon(aes(group = group,fill = perCapSales),
+               colour = "gray50") +
+  facet_wrap(~description) +
+  theme_void() +
+  scale_fill_gradient(low = "white",high = "red")
+```
+
+```{r}
+write_csv(x = liquor,file = "liquorCleaned.csv")
+write_csv(x = iowaCountyPop,file = "iowaCountyPop.csv")
+```
+
+Below is an alternative visualization that draws individual stores as points and maps the variable of interest (e.g., per capita sales in $) to the size of each point
+
+```{r}
+iowaState <- map_data(map = "state",region = "iowa")
+
+iowaCounty %>%
+  mutate(subregion = toupper(subregion)) %>%
+  left_join(y = liquorFiltered,
+            by = c("subregion" = "County")) %>%
+  left_join(iowaCountyPop,
+            by = c("subregion" = "County" )) %>%
+  mutate(perCapSales = saleTotal/Population)  %>%
+  group_by(subregion,description) %>%
+  summarise(countyCenter_long = mean(long),
+            countyCenter_lat = mean(lat),
+            perCapSales = unique(perCapSales)) %>%
+  ggplot(aes(x=countyCenter_long,y=countyCenter_lat)) +
+  geom_point(aes(size = perCapSales)) +
+  geom_path(data = iowaState,
+            aes(x = long,y = lat),
+            inherit.aes = FALSE) +
+  facet_wrap(~description) +
+  coord_fixed(xlim = c(-96.639704,-90.140061),
+              ylim = c(40.375501,43.501196)) +
+  theme_void()
+```
+
+
+
+## Market Basket Analysis
+
+The first 6 digits in the invoice code detail an individual purchaser - for example, 339132 in the table below - followed by 5 digits that detail the individual item purchased, probably associated with a unique SKU.
+
+This means we can analyze which items tend to be purchased together. This is useful in a marketing capacity to build something called a 'recommender system.' If you've ever seen on an online store page a menu that says 'Customers who bought [x] also bought [y],' then you've witnessed a recommender system at-work. Other terms for this type of analysis are 'Market Basket Analysis' or 'Association Rule Learning.'
+
+
+
+```{r}
+liquor %>%
+  filter(Date == "2021-01-02") %>%
+  arrange(invoice) %>%
+  slice(7:14)
+```
+
+We will perform a very rudimentary market basket analysis. Note that there are more robust techniques available in R packages such as `arules` that you may be interested in exploring.
+
+For the sake of an example, we'll consider association rules between Tito's Handmade Vodka and various liquors. When we go to implement this in the app, we'll allow the user to select a specific liquor other than Tito's, but we need to start somewhere.
+
+### Support
+
+First, let's calculate the support between Tito's and each liquor. For liquor Y, the support is the probability of observing a sale that includes both Tito's and Y.
+
+$$
+Support(Titos,Y) = P(Titos,Y) = \frac{\text{\# sales with Titos and Y}}{\text{total \# sales}}
+$$
+
+We first search the data set for all purchases that included Tito's Handmade Vodka. We filter the liquor data set to only these purchases and save this to `salesIncludingTitos`.
+
+```{r}
+liquor <- liquor %>%
+  mutate(saleID = str_sub(invoice,5,10))
+
+allSaleID <- unique(liquor$saleID)
+
+titosSaleID <- liquor %>%
+  select(saleID,description) %>%
+  filter(description == "Titos Handmade Vodka") %>%
+  distinct() %>%
+  pull(saleID) %>%
+  unique()
+
+salesIncludingTitos <- liquor %>%
+  filter(saleID %in% titosSaleID) %>%
+  select(saleID,description) %>%
+  arrange(saleID) %>%
+  distinct()
+
+salesIncludingTitos
+```
+
+To calculate support, we first tally the number of sale IDs that included each type of liquor in the `salesIncludingTitos` data set. This is equivalent to calculating the numerator of the support. Then, we simply divide by the total number of sale IDs in the data set. 
+
+Considering the output below, Tito's Handmade Vodka unsurprisingly has the largest support with itself. You'll notice that the liquors with the highest support with Tito's also happen to be the most popular liquors overall. The support is affected by the overall prevalence of each liquor in the data set - more popular liquors will naturally have higher support -- so it's not really the most insightful statistic. Support by itself provides the "no duh" associations between items like "customers who bought eggs also bought bread." However, we will use the support as a building block to calculating the lift.
+
+```{r}
+titosSupport <- salesIncludingTitos %>%
+  group_by(description) %>%
+  summarise(n = n()) %>%
+  mutate(support = n/length(allSaleID))
+
+titosSupport %>%
+  arrange(desc(support))
+```
+
+### Confidence
+
+Next, we'll consider the confidence: the probability that a sale included liquor Y *given* (denoted by a vertical bar $|$) that it included Tito's.
+
+$$
+Confidence(Y | Titos) = P(Y | Tito's) = \frac{P(Y,Tito's)}{P(Tito's)} = \frac{Support(Y,Tito's)}{\frac{\text{\# sales with Tito's}}{\text{total \# sales}}}
+$$
+
+We already have calculated the numerator of the confidence for each liquor by calculating the support. Thus, we simply need to divide the support column by the probability that a sale included Tito's.
+
+Considering the output below, we see that the order of the highest confidence liquors is the same as the highest support liquor. Thus, confidence is also affected by the prevalence of liquors in the data set -- more popular liquors will naturally have a higher support/confidence than less popular liquors. The confidence of Tito's with itself is obviously 1.
+
+```{r}
+titosConfidence <- titosSupport %>%
+  mutate(confidence = support/(length(titosSaleID)/length(allSaleID)))
+
+titosConfidence %>%
+  arrange(desc(confidence))
+```
+
+### Lift
+
+Finally, we'll consider the lift of liquor Y given Tito's. Think of this as a measure of association between the occurrence of Tito's and of liquor Y. The larger the lift, the more often liquor Y and Tito's are observed together **after accounting for the frequency of both liquors.** As opposed to support/confidence, which can be deceptive if two liquors are overall very popular in a data set (e.g., Tito's and Black Velvet), lift accounts for the rarity of both liquors and can therefore uncover associations that support/confidence do not.
+
+$$
+Lift(Y | Tito's) = \frac{P(Y | Tito's)}{P(Y)} = \frac{Confidence(Y | Tito's)}{\frac{\text{\# sales including liquor Y}}{\text{total \# sales}}}
+$$
+
+Again, we have already calculated the numerator of the lift in calculating the confidence. We then divide the confidence by the probability of observing liquor Y in the data set -- this is what we mean by "taking into account the frequency of both liquors." The `liquorYFrequency` data set contains the number of sales that include each liquor. We use this in calculating the denominator of the lift.
+
+```{r}
+liquorYFrequency <- liquor %>%
+  select(saleID,description) %>%
+  distinct() %>%
+  group_by(description) %>%
+  tally(name = "freq")
+
+liquorYFrequency
+```
+
+We see that the liquors with the highest associated lift with Tito's are rather different than the highest support/confidence. If one were to develop a recommender system for Tito's purchasers, it seems reasonable to recommend liquors that have the highest lift and, amongst these liquors, those with the highest support/confidence.
+
+```{r}
+titosConfidence %>%
+  left_join(liquorYFrequency,
+            by = "description") %>%
+  mutate(lift = confidence/(freq/length(allSaleID))) %>%
+  select(-c(support,n,freq)) %>%
+  arrange(desc(lift),desc(confidence)) %>%
+  # filter(description != "Titos Handmade Vodka") %>%
+  top_n(n = 30,wt = lift)
+```
+
